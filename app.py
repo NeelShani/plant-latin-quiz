@@ -100,7 +100,7 @@ if st.session_state.remaining:
         st.session_state.current = st.session_state.remaining.pop()
     img, text = st.session_state.subset[st.session_state.current]
 
-    st.image(img, use_raw_width=True, use_column_width=True)
+    st.image(img)
     st.text_input("Your guess (optional):", key="guess_input")
 
     # Reveal / Next
