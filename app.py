@@ -1,93 +1,113 @@
 import streamlit as st
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 from PIL import Image
 import io
 import random
 
-st.set_page_config(page_title="Plant Latin Name Quiz", layout="wide")
-st.title("Plant Quiz: Guess the Latin Name")
+# ——— Page config & welcome ——————————————————————————
+st.set_page_config(page_title="Plant Name Memory Quiz", layout="wide")
+st.title("Plant Quiz")
 st.markdown("### Hello Anna! Welcome to this specialized app created just for you.")
 
-# Session state init
-for key in ("plants","quiz_order","subset","current_index","score","answered"):
-    if key not in st.session_state:
-        st.session_state[key] = [] if key=="plants" else 0
+# ——— Session‐state defaults —————————————————————————
+if "plants" not in st.session_state:
+    st.session_state.plants = []
+if "subset" not in st.session_state:
+    st.session_state.subset = []
+if "remaining" not in st.session_state:
+    st.session_state.remaining = []
+if "current_slide" not in st.session_state:
+    st.session_state.current_slide = None
+if "revealed" not in st.session_state:
+    st.session_state.revealed = False
 
-# PPTX upload
-pptx_file = st.file_uploader("Upload PowerPoint (.pptx)", type=["pptx"])
+# ——— Upload & extract —————————————————————————————
+pptx_file = st.file_uploader("Upload your PowerPoint (.pptx)", type=["pptx"])
 
-def extract_plants(pptx_bytes):
+def extract_slides(pptx_bytes):
     prs = Presentation(io.BytesIO(pptx_bytes))
-    plants = []
+    slides = []
     for slide in prs.slides:
+        # grab first image
         img = None
-        text = ""
-        # 1) find the picture (any shape with an .image)
         for shp in slide.shapes:
-            if hasattr(shp, "image"):
+            if shp.shape_type in (MSO_SHAPE_TYPE.PICTURE, MSO_SHAPE_TYPE.PLACEHOLDER):
                 try:
-                    blob = shp.image.blob
-                    img = Image.open(io.BytesIO(blob))
+                    img = Image.open(io.BytesIO(shp.image.blob))
                     break
                 except Exception:
-                    continue
-        # 2) gather all text on the slide
-        for shp in slide.shapes:
-            if hasattr(shp, "text") and shp.text.strip():
-                text += shp.text.strip() + "\n"
-        # split first non-empty line by dash or comma into Czech/Latin
-        lines = [ln for ln in text.splitlines() if ln.strip()]
+                    pass
+        # collect all text
+        lines = [
+            shp.text.strip()
+            for shp in slide.shapes
+            if hasattr(shp, "text") and shp.text.strip()
+        ]
         if img and lines:
-            # assume first line is "Czech – Latin"
-            parts = [p.strip() for p in lines[0].replace("–",",").split(",") if p.strip()]
-            if len(parts) >= 2:
-                plants.append((img, parts[0], parts[1]))
-    return plants
+            slides.append((img, "\n".join(lines)))
+    return slides
 
 if pptx_file:
-    plants = extract_plants(pptx_file.read())
-    if not plants:
-        st.error("No images + names found—please check your slides contain one picture and one text box each.")
-    else:
-        st.session_state.plants = plants
-        total = len(plants)
-        start, end = st.slider("Choose plant range:", 1, total, (1, total))
-        if st.button("Start Quiz"):
-            subset = plants[start-1:end]
-            st.session_state.subset = subset
-            st.session_state.quiz_order = list(range(len(subset)))
-            random.shuffle(st.session_state.quiz_order)
-            st.session_state.current_index = 0
-            st.session_state.score = 0
-            st.session_state.answered = 0
-            st.experimental_rerun()
+    st.session_state.plants = extract_slides(pptx_file.read())
+    n = len(st.session_state.plants)
+    if n == 0:
+        st.error("❌ No valid slides found. Each slide needs one image + ≥1 text box.")
+        st.stop()
+    st.success(f"✓ Loaded {n} slides.")
 
-# Quiz loop
-if st.session_state.quiz_order:
-    idx = st.session_state.quiz_order[st.session_state.current_index]
-    img, czech, latin = st.session_state.subset[idx]
+    # choose whether to quiz all or a sub-range
+    quiz_all = st.checkbox("Quiz **all** slides (ignore range)", value=True)
+    if not quiz_all:
+        start, end = st.slider("Select slide-range to quiz:", 1, n, (1, n))
+    else:
+        start, end = 1, n
+
+    if st.button("Start Quiz"):
+        # slice out the subset and reset state
+        st.session_state.subset = st.session_state.plants[start-1:end]
+        # initialize remaining indices
+        st.session_state.remaining = list(range(len(st.session_state.subset)))
+        random.shuffle(st.session_state.remaining)
+        st.session_state.current_slide = None
+        st.session_state.revealed = False
+        st.experimental_rerun()
+
+# ——— Quiz loop —————————————————————————————————————
+if st.session_state.remaining:
+    # if we need to pick a new slide
+    if st.session_state.current_slide is None:
+        st.session_state.current_slide = st.session_state.remaining.pop()
+    img, text = st.session_state.subset[st.session_state.current_slide]
 
     st.image(img, use_column_width=True)
-    st.subheader("Guess the **Latin name** of this plant:")
-    guess = st.text_input("Your guess:", key="guess_input")
+    st.text_input("Your guess (optional):", key="guess_input")
 
-    if st.button("Submit"):
-        st.markdown(f"**Czech name:** {czech}")
-        st.markdown(f"**Latin name:** {latin}")
+    # action buttons
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Reveal Answer"):
+            st.session_state.revealed = True
+    with c2:
+        if st.button("Next"):
+            st.session_state.current_slide = None
+            st.session_state.revealed = False
+            st.experimental_rerun()
 
-        st.session_state.answered += 1
-        if guess.strip().lower() == latin.lower():
-            st.success("✅ Correct!")
-            st.session_state.score += 1
-        else:
-            st.error("❌ Incorrect.")
+    if st.session_state.revealed:
+        st.markdown("**Answer (all text on slide):**")
+        st.write(text)
 
-        if st.session_state.current_index < len(st.session_state.quiz_order) - 1:
-            if st.button("Next"):
-                st.session_state.current_index += 1
-                st.experimental_rerun()
-        else:
-            st.balloons()
-            st.success("### Quiz Complete!")
-            st.markdown(f"**Final Score:** {st.session_state.score} / {st.session_state.answered}")
-            st.markdown("### Good luck for the exam — you can do it!❤️")
+elif st.session_state.subset:
+    # no remaining slides
+    st.info("✅ You've seen **all** slides in this range!")
+    if st.button("Restart Quiz"):
+        # re-initialize the deck
+        st.session_state.remaining = list(range(len(st.session_state.subset)))
+        random.shuffle(st.session_state.remaining)
+        st.session_state.current_slide = None
+        st.session_state.revealed = False
+        st.experimental_rerun()
+
+    
+st.markdown("### Good luck for the exam — you can do it!❤️")
